@@ -1,0 +1,236 @@
+// ======================================================================
+// Schema Prisma - Rede de Lanchonetes (Back-end multicanal)
+// Banco: SQLite (arquivo local). Para PostgreSQL/MySQL basta trocar o
+// "provider" e a DATABASE_URL. SQLite nao tem tipo ENUM nativo, por isso
+// os enums do dominio sao armazenados como String e validados na camada
+// de aplicacao (ver src/domain/enums.js).
+// ======================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------
+// Usuario do sistema (clientes e equipe). O perfil (role) controla o
+// acesso. Funcionarios (GERENTE/ATENDENTE/COZINHA) podem estar vinculados
+// a uma unidade.
+// ---------------------------------------------------------------------
+model Usuario {
+  id                Int       @id @default(autoincrement())
+  nome              String
+  email             String    @unique
+  senhaHash         String
+  perfil            String    @default("CLIENTE") // ADMIN | GERENTE | ATENDENTE | COZINHA | CLIENTE
+  telefone          String?
+  ativo             Boolean   @default(true)
+
+  // LGPD: consentimento explicito para o programa de fidelidade / marketing
+  consentimentoLGPD Boolean   @default(false)
+  consentimentoEm   DateTime?
+
+  unidadeId         Int?
+  unidade           Unidade?  @relation(fields: [unidadeId], references: [id])
+
+  pedidos           Pedido[]
+  contaFidelidade   ContaFidelidade?
+  movimentacoesEstoque MovimentacaoEstoque[]
+  logs              LogAuditoria[]
+
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  @@index([perfil])
+}
+
+// ---------------------------------------------------------------------
+// Unidade da rede (franquia/loja). Possui estoque proprio e pedidos.
+// ---------------------------------------------------------------------
+model Unidade {
+  id        Int      @id @default(autoincrement())
+  nome      String
+  cidade    String
+  endereco  String?
+  ativo     Boolean  @default(true)
+
+  estoques  Estoque[]
+  pedidos   Pedido[]
+  usuarios  Usuario[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// ---------------------------------------------------------------------
+// Produto do catalogo (cardapio). O preco base fica aqui; a
+// disponibilidade por unidade e controlada pela tabela Estoque.
+// ---------------------------------------------------------------------
+model Produto {
+  id          Int      @id @default(autoincrement())
+  nome        String
+  descricao   String?
+  categoria   String   @default("LANCHE") // LANCHE | BEBIDA | ACOMPANHAMENTO | SOBREMESA
+  preco       Float
+  ativo       Boolean  @default(true)
+
+  estoques    Estoque[]
+  itensPedido ItemPedido[]
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([categoria])
+}
+
+// ---------------------------------------------------------------------
+// Estoque: quantidade de um Produto em uma Unidade especifica.
+// Um produto so aparece no cardapio de uma unidade se tiver registro
+// de estoque (e fica indisponivel quando a quantidade chega a zero).
+// ---------------------------------------------------------------------
+model Estoque {
+  id            Int      @id @default(autoincrement())
+  unidadeId     Int
+  produtoId     Int
+  quantidade    Int      @default(0)
+
+  unidade       Unidade  @relation(fields: [unidadeId], references: [id], onDelete: Cascade)
+  produto       Produto  @relation(fields: [produtoId], references: [id], onDelete: Cascade)
+  movimentacoes MovimentacaoEstoque[]
+
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@unique([unidadeId, produtoId])
+}
+
+// ---------------------------------------------------------------------
+// Movimentacao de estoque (entrada/saida) - trilha de auditoria fisica.
+// ---------------------------------------------------------------------
+model MovimentacaoEstoque {
+  id         Int      @id @default(autoincrement())
+  estoqueId  Int
+  tipo       String   // ENTRADA | SAIDA
+  quantidade Int
+  motivo     String?
+  usuarioId  Int?
+
+  estoque    Estoque  @relation(fields: [estoqueId], references: [id], onDelete: Cascade)
+  usuario    Usuario? @relation(fields: [usuarioId], references: [id])
+
+  createdAt  DateTime @default(now())
+}
+
+// ---------------------------------------------------------------------
+// Pedido - agregado central do fluxo critico. Registra o canal de origem
+// (canalPedido) para rastreabilidade multicanal.
+// ---------------------------------------------------------------------
+model Pedido {
+  id          Int      @id @default(autoincrement())
+  clienteId   Int
+  unidadeId   Int
+  canalPedido String   // APP | TOTEM | BALCAO | PICKUP | WEB
+  status      String   @default("AGUARDANDO_PAGAMENTO")
+  // AGUARDANDO_PAGAMENTO | PAGO | EM_PREPARO | PRONTO | ENTREGUE | CANCELADO
+  total       Float    @default(0)
+
+  cliente     Usuario  @relation(fields: [clienteId], references: [id])
+  unidade     Unidade  @relation(fields: [unidadeId], references: [id])
+  itens       ItemPedido[]
+  pagamentos  Pagamento[]
+  pontos      MovimentacaoFidelidade[]
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([canalPedido])
+  @@index([status])
+}
+
+// ---------------------------------------------------------------------
+// Item do pedido (snapshot de preco no momento da compra).
+// ---------------------------------------------------------------------
+model ItemPedido {
+  id            Int     @id @default(autoincrement())
+  pedidoId      Int
+  produtoId     Int
+  quantidade    Int
+  precoUnitario Float
+
+  pedido        Pedido  @relation(fields: [pedidoId], references: [id], onDelete: Cascade)
+  produto       Produto @relation(fields: [produtoId], references: [id])
+}
+
+// ---------------------------------------------------------------------
+// Pagamento - DESACOPLADO do pedido (entidade propria). Guarda o payload
+// enviado ao gateway externo (mock) e o payload de retorno.
+// ---------------------------------------------------------------------
+model Pagamento {
+  id             Int      @id @default(autoincrement())
+  pedidoId       Int
+  status         String   @default("PENDENTE") // PENDENTE | APROVADO | RECUSADO
+  metodo         String   // MOCK | PIX | CARTAO
+  valor          Float
+  transacaoId    String?
+  payloadEnviado String?  // JSON serializado (request ao gateway)
+  payloadRetorno String?  // JSON serializado (response do gateway)
+
+  pedido         Pedido   @relation(fields: [pedidoId], references: [id], onDelete: Cascade)
+
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([pedidoId])
+}
+
+// ---------------------------------------------------------------------
+// Programa de fidelidade: conta de pontos (1:1 com cliente) + extrato.
+// ---------------------------------------------------------------------
+model ContaFidelidade {
+  id            Int      @id @default(autoincrement())
+  clienteId     Int      @unique
+  saldoPontos   Int      @default(0)
+
+  cliente       Usuario  @relation(fields: [clienteId], references: [id], onDelete: Cascade)
+  movimentacoes MovimentacaoFidelidade[]
+
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+
+model MovimentacaoFidelidade {
+  id        Int      @id @default(autoincrement())
+  contaId   Int
+  tipo      String   // ACUMULO | RESGATE
+  pontos    Int
+  pedidoId  Int?
+  descricao String?
+
+  conta     ContaFidelidade @relation(fields: [contaId], references: [id], onDelete: Cascade)
+  pedido    Pedido?         @relation(fields: [pedidoId], references: [id])
+
+  createdAt DateTime @default(now())
+}
+
+// ---------------------------------------------------------------------
+// Log de auditoria de acoes sensiveis (LGPD / rastreabilidade).
+// ---------------------------------------------------------------------
+model LogAuditoria {
+  id         Int      @id @default(autoincrement())
+  usuarioId  Int?
+  acao       String   // ex.: PEDIDO_CRIADO, STATUS_ALTERADO, LOGIN, PAGAMENTO_PROCESSADO
+  entidade   String?  // ex.: Pedido, Usuario
+  entidadeId String?
+  detalhes   String?  // JSON serializado
+  ip         String?
+
+  usuario    Usuario? @relation(fields: [usuarioId], references: [id])
+
+  createdAt  DateTime @default(now())
+
+  @@index([acao])
+  @@index([entidade])
+}
