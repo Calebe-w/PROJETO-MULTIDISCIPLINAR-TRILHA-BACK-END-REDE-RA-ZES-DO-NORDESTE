@@ -1,0 +1,594 @@
+openapi: 3.0.3
+info:
+  title: API Rede de Lanchonetes (Back-end Multicanal)
+  version: 1.0.0
+  description: >
+    API REST para uma rede de lanchonetes em expansao, com suporte a multiplos
+    canais (APP, TOTEM, BALCAO, PICKUP, WEB). Cobre autenticacao por JWT com
+    perfis/roles, gestao de unidades, cardapio e estoque por unidade, fluxo
+    critico de pedido -> pagamento (mock) -> atualizacao de status, programa de
+    fidelidade e controles de LGPD/auditoria.
+servers:
+  - url: http://localhost:3000
+    description: Ambiente local
+
+tags:
+  - name: Auth
+  - name: Usuarios
+  - name: Unidades
+  - name: Produtos
+  - name: Estoque
+  - name: Pedidos
+  - name: Pagamentos
+  - name: Fidelidade
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  schemas:
+    Erro:
+      type: object
+      description: Formato PADRONIZADO de erro (usado em todas as falhas).
+      properties:
+        error: { type: string, example: VALIDACAO }
+        message: { type: string, example: Erro de validacao nos dados enviados. }
+        details:
+          type: array
+          items:
+            type: object
+            properties:
+              field: { type: string, example: canalPedido }
+              issue: { type: string, example: canalPedido e obrigatorio. }
+        timestamp: { type: string, format: date-time }
+        path: { type: string, example: /api/pedidos }
+        requestId: { type: string, example: 1d6e... }
+    Login:
+      type: object
+      required: [email, senha]
+      properties:
+        email: { type: string, example: cliente@exemplo.com }
+        senha: { type: string, example: Senha@123 }
+    TokenResponse:
+      type: object
+      properties:
+        accessToken: { type: string }
+        refreshToken: { type: string }
+        tokenType: { type: string, example: Bearer }
+        user: { $ref: '#/components/schemas/Usuario' }
+    Registro:
+      type: object
+      required: [nome, email, senha]
+      properties:
+        nome: { type: string, example: Maria Cliente }
+        email: { type: string, example: maria@exemplo.com }
+        senha: { type: string, example: Senha@123 }
+        telefone: { type: string, example: '11999998888' }
+        consentimentoLGPD: { type: boolean, example: true }
+    Usuario:
+      type: object
+      properties:
+        id: { type: integer, example: 4 }
+        nome: { type: string }
+        email: { type: string }
+        perfil: { type: string, enum: [ADMIN, GERENTE, ATENDENTE, COZINHA, CLIENTE] }
+        consentimentoLGPD: { type: boolean }
+    Unidade:
+      type: object
+      properties:
+        id: { type: integer }
+        nome: { type: string }
+        cidade: { type: string }
+        endereco: { type: string }
+        ativo: { type: boolean }
+    Produto:
+      type: object
+      properties:
+        id: { type: integer }
+        nome: { type: string }
+        descricao: { type: string }
+        categoria: { type: string, enum: [LANCHE, BEBIDA, ACOMPANHAMENTO, SOBREMESA] }
+        preco: { type: number, example: 24.9 }
+        ativo: { type: boolean }
+    ProdutoInput:
+      type: object
+      required: [nome, preco]
+      properties:
+        nome: { type: string, example: X-Bacon }
+        descricao: { type: string }
+        categoria: { type: string, enum: [LANCHE, BEBIDA, ACOMPANHAMENTO, SOBREMESA] }
+        preco: { type: number, example: 29.9 }
+    Movimentacao:
+      type: object
+      required: [unidadeId, produtoId, tipo, quantidade]
+      properties:
+        unidadeId: { type: integer, example: 1 }
+        produtoId: { type: integer, example: 1 }
+        tipo: { type: string, enum: [ENTRADA, SAIDA], example: ENTRADA }
+        quantidade: { type: integer, example: 50 }
+        motivo: { type: string, example: Reposicao }
+    PedidoInput:
+      type: object
+      required: [unidadeId, canalPedido, itens]
+      properties:
+        unidadeId: { type: integer, example: 1 }
+        canalPedido:
+          type: string
+          enum: [APP, TOTEM, BALCAO, PICKUP, WEB]
+          example: TOTEM
+        itens:
+          type: array
+          items:
+            type: object
+            required: [produtoId, quantidade]
+            properties:
+              produtoId: { type: integer, example: 1 }
+              quantidade: { type: integer, example: 2 }
+    Pedido:
+      type: object
+      properties:
+        id: { type: integer, example: 1 }
+        clienteId: { type: integer }
+        unidadeId: { type: integer }
+        canalPedido: { type: string, example: TOTEM }
+        status:
+          type: string
+          enum: [AGUARDANDO_PAGAMENTO, PAGO, EM_PREPARO, PRONTO, ENTREGUE, CANCELADO]
+        total: { type: number, example: 64.7 }
+        itens:
+          type: array
+          items:
+            type: object
+            properties:
+              produtoId: { type: integer }
+              quantidade: { type: integer }
+              precoUnitario: { type: number }
+    StatusInput:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [PAGO, EM_PREPARO, PRONTO, ENTREGUE, CANCELADO]
+          example: EM_PREPARO
+    PagamentoInput:
+      type: object
+      required: [pedidoId]
+      properties:
+        pedidoId: { type: integer, example: 1 }
+        metodo: { type: string, enum: [MOCK, PIX, CARTAO], example: MOCK }
+        simular:
+          type: string
+          enum: [APROVAR, RECUSAR, TIMEOUT]
+          description: Controla o resultado simulado do gateway mock.
+          example: APROVAR
+    PagamentoResponse:
+      type: object
+      properties:
+        pagamentoId: { type: integer }
+        pedidoId: { type: integer }
+        statusPagamento: { type: string, enum: [APROVADO, RECUSADO, PENDENTE] }
+        statusPedido: { type: string }
+        transacaoId: { type: string }
+        mensagem: { type: string }
+        pontosCreditados: { type: integer }
+
+  responses:
+    NaoAutenticado:
+      description: Token ausente/invalido
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Erro' }
+    SemPermissao:
+      description: Perfil sem permissao
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Erro' }
+    NaoEncontrado:
+      description: Recurso inexistente
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Erro' }
+    Validacao:
+      description: Erro de validacao
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Erro' }
+    Conflito:
+      description: Conflito / regra de negocio
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Erro' }
+
+security:
+  - bearerAuth: []
+
+paths:
+  /health:
+    get:
+      tags: [Auth]
+      summary: Healthcheck
+      security: []
+      responses:
+        '200': { description: OK }
+
+  /api/auth/register:
+    post:
+      tags: [Auth]
+      summary: Cadastro publico de cliente
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Registro' }
+      responses:
+        '201':
+          description: Criado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Usuario' }
+        '409': { $ref: '#/components/responses/Conflito' }
+        '422': { $ref: '#/components/responses/Validacao' }
+
+  /api/auth/login:
+    post:
+      tags: [Auth]
+      summary: Autentica e retorna tokens
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Login' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TokenResponse' }
+        '401': { $ref: '#/components/responses/NaoAutenticado' }
+        '422': { $ref: '#/components/responses/Validacao' }
+
+  /api/auth/refresh:
+    post:
+      tags: [Auth]
+      summary: Renova o access token
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refreshToken]
+              properties:
+                refreshToken: { type: string }
+      responses:
+        '200': { description: OK }
+        '401': { $ref: '#/components/responses/NaoAutenticado' }
+
+  /api/auth/logout:
+    post:
+      tags: [Auth]
+      summary: Logout (stateless)
+      responses:
+        '200': { description: OK }
+
+  /api/usuarios/me:
+    get:
+      tags: [Usuarios]
+      summary: Perfil do usuario autenticado
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Usuario' }
+        '401': { $ref: '#/components/responses/NaoAutenticado' }
+
+  /api/usuarios:
+    get:
+      tags: [Usuarios]
+      summary: Lista usuarios (ADMIN)
+      parameters:
+        - { in: query, name: page, schema: { type: integer, default: 1 } }
+        - { in: query, name: limit, schema: { type: integer, default: 10 } }
+      responses:
+        '200': { description: OK }
+        '401': { $ref: '#/components/responses/NaoAutenticado' }
+        '403': { $ref: '#/components/responses/SemPermissao' }
+    post:
+      tags: [Usuarios]
+      summary: Cria funcionario (ADMIN)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [nome, email, senha, perfil]
+              properties:
+                nome: { type: string }
+                email: { type: string }
+                senha: { type: string }
+                perfil: { type: string, enum: [ADMIN, GERENTE, ATENDENTE, COZINHA, CLIENTE] }
+                unidadeId: { type: integer }
+      responses:
+        '201': { description: Criado }
+        '403': { $ref: '#/components/responses/SemPermissao' }
+        '409': { $ref: '#/components/responses/Conflito' }
+
+  /api/unidades:
+    get:
+      tags: [Unidades]
+      summary: Lista unidades
+      responses:
+        '200': { description: OK }
+        '401': { $ref: '#/components/responses/NaoAutenticado' }
+    post:
+      tags: [Unidades]
+      summary: Cria unidade (ADMIN)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Unidade' }
+      responses:
+        '201': { description: Criado }
+        '403': { $ref: '#/components/responses/SemPermissao' }
+
+  /api/unidades/{id}:
+    get:
+      tags: [Unidades]
+      summary: Detalhe da unidade
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: integer } }
+      responses:
+        '200': { description: OK }
+        '404': { $ref: '#/components/responses/NaoEncontrado' }
+
+  /api/unidades/{id}/cardapio:
+    get:
+      tags: [Unidades]
+      summary: Cardapio por unidade (produtos + disponibilidade)
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: integer } }
+      responses:
+        '200': { description: OK }
+        '404': { $ref: '#/components/responses/NaoEncontrado' }
+
+  /api/produtos:
+    get:
+      tags: [Produtos]
+      summary: Lista produtos (paginado, filtro por categoria)
+      parameters:
+        - { in: query, name: page, schema: { type: integer } }
+        - { in: query, name: limit, schema: { type: integer } }
+        - { in: query, name: categoria, schema: { type: string, enum: [LANCHE, BEBIDA, ACOMPANHAMENTO, SOBREMESA] } }
+      responses:
+        '200': { description: OK }
+        '401': { $ref: '#/components/responses/NaoAutenticado' }
+    post:
+      tags: [Produtos]
+      summary: Cria produto (ADMIN/GERENTE)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProdutoInput' }
+      responses:
+        '201':
+          description: Criado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Produto' }
+        '403': { $ref: '#/components/responses/SemPermissao' }
+        '422': { $ref: '#/components/responses/Validacao' }
+
+  /api/produtos/{id}:
+    get:
+      tags: [Produtos]
+      summary: Detalhe do produto
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: integer } }
+      responses:
+        '200': { description: OK }
+        '404': { $ref: '#/components/responses/NaoEncontrado' }
+    put:
+      tags: [Produtos]
+      summary: Atualiza produto (ADMIN/GERENTE)
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: integer } }
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProdutoInput' }
+      responses:
+        '200': { description: OK }
+        '403': { $ref: '#/components/responses/SemPermissao' }
+        '404': { $ref: '#/components/responses/NaoEncontrado' }
+    delete:
+      tags: [Produtos]
+      summary: Desativa produto (ADMIN)
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: integer } }
+      responses:
+        '204': { description: Sem conteudo }
+        '403': { $ref: '#/components/responses/SemPermissao' }
+
+  /api/estoque/unidade/{id}:
+    get:
+      tags: [Estoque]
+      summary: Saldo de estoque por unidade
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: integer } }
+      responses:
+        '200': { description: OK }
+        '403': { $ref: '#/components/responses/SemPermissao' }
+        '404': { $ref: '#/components/responses/NaoEncontrado' }
+
+  /api/estoque/movimentacoes:
+    post:
+      tags: [Estoque]
+      summary: Movimenta estoque (entrada/saida) (ADMIN/GERENTE)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Movimentacao' }
+      responses:
+        '201': { description: Criado }
+        '403': { $ref: '#/components/responses/SemPermissao' }
+        '409': { $ref: '#/components/responses/Conflito' }
+        '422': { $ref: '#/components/responses/Validacao' }
+
+  /api/pedidos:
+    post:
+      tags: [Pedidos]
+      summary: Cria pedido (fluxo critico). canalPedido OBRIGATORIO.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PedidoInput' }
+      responses:
+        '201':
+          description: Criado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Pedido' }
+        '401': { $ref: '#/components/responses/NaoAutenticado' }
+        '403': { $ref: '#/components/responses/SemPermissao' }
+        '404': { $ref: '#/components/responses/NaoEncontrado' }
+        '409':
+          description: Estoque insuficiente
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Erro' }
+        '422': { $ref: '#/components/responses/Validacao' }
+    get:
+      tags: [Pedidos]
+      summary: Lista/filtra pedidos por canal e status
+      parameters:
+        - { in: query, name: page, schema: { type: integer } }
+        - { in: query, name: limit, schema: { type: integer } }
+        - in: query
+          name: canalPedido
+          schema: { type: string, enum: [APP, TOTEM, BALCAO, PICKUP, WEB] }
+          description: Filtra pedidos por canal de origem.
+        - in: query
+          name: status
+          schema: { type: string, enum: [AGUARDANDO_PAGAMENTO, PAGO, EM_PREPARO, PRONTO, ENTREGUE, CANCELADO] }
+      responses:
+        '200': { description: OK }
+        '401': { $ref: '#/components/responses/NaoAutenticado' }
+
+  /api/pedidos/{id}:
+    get:
+      tags: [Pedidos]
+      summary: Detalhe do pedido
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: integer } }
+      responses:
+        '200': { description: OK }
+        '403': { $ref: '#/components/responses/SemPermissao' }
+        '404': { $ref: '#/components/responses/NaoEncontrado' }
+
+  /api/pedidos/{id}/status:
+    patch:
+      tags: [Pedidos]
+      summary: Atualiza status (maquina de estados)
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: integer } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/StatusInput' }
+      responses:
+        '200': { description: OK }
+        '403': { $ref: '#/components/responses/SemPermissao' }
+        '404': { $ref: '#/components/responses/NaoEncontrado' }
+        '409':
+          description: Transicao de status invalida
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Erro' }
+
+  /api/pagamentos:
+    post:
+      tags: [Pagamentos]
+      summary: Solicita pagamento ao gateway externo (mock)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PagamentoInput' }
+      responses:
+        '200':
+          description: Processado (ver statusPagamento)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PagamentoResponse' }
+        '401': { $ref: '#/components/responses/NaoAutenticado' }
+        '403': { $ref: '#/components/responses/SemPermissao' }
+        '404': { $ref: '#/components/responses/NaoEncontrado' }
+        '409':
+          description: Pedido nao pagavel ou gateway indisponivel
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Erro' }
+
+  /api/pagamentos/pedido/{id}:
+    get:
+      tags: [Pagamentos]
+      summary: Historico de pagamentos de um pedido
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: integer } }
+      responses:
+        '200': { description: OK }
+
+  /api/fidelidade/saldo:
+    get:
+      tags: [Fidelidade]
+      summary: Saldo e historico de pontos do cliente
+      responses:
+        '200': { description: OK }
+        '403': { $ref: '#/components/responses/SemPermissao' }
+        '404': { $ref: '#/components/responses/NaoEncontrado' }
+
+  /api/fidelidade/consentimento:
+    post:
+      tags: [Fidelidade]
+      summary: Registra/atualiza consentimento LGPD
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [consentir]
+              properties:
+                consentir: { type: boolean, example: true }
+      responses:
+        '200': { description: OK }
+
+  /api/fidelidade/resgate:
+    post:
+      tags: [Fidelidade]
+      summary: Resgata pontos
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [pontos]
+              properties:
+                pontos: { type: integer, example: 50 }
+      responses:
+        '200': { description: OK }
+        '409': { $ref: '#/components/responses/Conflito' }
